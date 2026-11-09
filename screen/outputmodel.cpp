@@ -78,6 +78,13 @@ QVariant OutputModel::data(const QModelIndex &index, int role) const
         return replicationSourceIndex(index.row());
     case ReplicasModelRole:
         return replicasModel(output);
+    case ColorProfileSourceRole:
+        return static_cast<int>(output->colorProfileSource());
+    case IccProfilePathRole:
+        return output->iccProfilePath();
+    case ColorProfileSupportRole:
+        return (output->capabilities() & KScreen::Output::Capability::IccProfile ? 1 : 0)
+            | (output->capabilities() & KScreen::Output::Capability::BuiltInColorProfile ? 2 : 0);
     case RefreshRatesRole:
         QVariantList ret;
         for (const auto rate : refreshRates(output)) {
@@ -160,12 +167,33 @@ bool OutputModel::setData(const QModelIndex &index,
             return setReplicationSourceIndex(index.row(), value.toInt() - 1);
         }
         break;
+    case ColorProfileSourceRole:
+        if (value.canConvert<int>() && value.toInt() >= 0 && value.toInt() <= 2) {
+            const auto source = static_cast<KScreen::Output::ColorProfileSource>(value.toInt());
+            if (output.ptr->colorProfileSource() == source)
+                return false;
+            output.ptr->setColorProfileSource(source);
+            Q_EMIT dataChanged(index, index, {role});
+            return true;
+        }
+        break;
+    case IccProfilePathRole: {
+        const QString path = value.toString();
+        if (output.ptr->iccProfilePath() == path)
+            return false;
+        output.ptr->setIccProfilePath(path);
+        Q_EMIT dataChanged(index, index, {role});
+        return true;
+    }
     case ScaleRole:
         bool ok;
         const qreal scale = value.toReal(&ok);
         if (ok && !qFuzzyCompare(output.ptr->scale(), scale)) {
+            const QRect before(output.ptr->pos(), output.ptr->geometry().size());
             output.ptr->setScale(scale);
             m_config->setScale(output.ptr, scale);
+            updateLogicalSize(output.ptr);
+            keepNeighboursTouching(index.row(), before);
             Q_EMIT sizeChanged();
             Q_EMIT dataChanged(index, index, {role, SizeRole});
             return true;
@@ -188,6 +216,9 @@ QHash<int, QByteArray> OutputModel::roleNames() const
     roles[AutoRotateOnlyInTabletModeRole] = "autoRotateOnlyInTabletMode";
     roles[RotationRole] = "rotation";
     roles[ScaleRole] = "scale";
+    roles[ColorProfileSourceRole] = "colorProfileSource";
+    roles[IccProfilePathRole] = "iccProfilePath";
+    roles[ColorProfileSupportRole] = "colorProfileSupport";
     roles[ResolutionIndexRole] = "resolutionIndex";
     roles[ResolutionsRole] = "resolutions";
     roles[RefreshRateIndexRole] = "refreshRateIndex";
@@ -342,7 +373,10 @@ bool OutputModel::setResolution(int outputIndex, int resIndex)
     if (output.ptr->currentModeId() == id) {
         return false;
     }
+    const QRect before(output.ptr->pos(), output.ptr->geometry().size());
     output.ptr->setCurrentModeId(id);
+    updateLogicalSize(output.ptr);
+    keepNeighboursTouching(outputIndex, before);
 
     QModelIndex index = createIndex(outputIndex, 0);
     // Calling this directly ignores possible optimization when the
@@ -437,31 +471,7 @@ bool OutputModel::setRotation(int outputIndex, KScreen::Output::Rotation rotatio
     if (output.ptr->isHorizontal() != wasHorizontal && output.ptr->explicitLogicalSize().isValid()) {
         output.ptr->setExplicitLogicalSize(output.ptr->explicitLogicalSize().transposed());
     }
-    const QSize after = output.ptr->geometry().size();
-
-    // Keep the monitors to its right and below touching it
-    const int dx = after.width() - before.width();
-    const int dy = after.height() - before.height();
-    for (int i = 0; i < m_outputs.size(); i++) {
-        Output &other = m_outputs[i];
-        if (i == outputIndex || !positionable(other)) {
-            continue;
-        }
-        QPoint shift;
-        if (other.ptr->pos().x() >= before.x() + before.width()) {
-            shift.setX(dx);
-        }
-        if (other.ptr->pos().y() >= before.y() + before.height()) {
-            shift.setY(dy);
-        }
-        if (shift.isNull()) {
-            continue;
-        }
-        other.pos += shift;
-        other.ptr->setPos(other.ptr->pos() + shift);
-        QModelIndex otherIndex = createIndex(i, 0);
-        Q_EMIT dataChanged(otherIndex, otherIndex, {PositionRole, NormalizedPositionRole});
-    }
+    keepNeighboursTouching(outputIndex, before);
 
     QModelIndex index = createIndex(outputIndex, 0);
     Q_EMIT dataChanged(index, index, {RotationRole, SizeRole});
@@ -712,6 +722,47 @@ void OutputModel::roleChanged(int outputId, OutputRoles role)
             Q_EMIT dataChanged(index, index, {role});
             return;
         }
+    }
+}
+
+// A monitor that changed size (rotation, scale, resolution) keeps the monitors to
+// its right and below touching it: no gap the pointer can't cross, no overlap
+void OutputModel::keepNeighboursTouching(int outputIndex, const QRect &before)
+{
+    const QSize after = m_outputs[outputIndex].ptr->geometry().size();
+    const int dx = after.width() - before.width();
+    const int dy = after.height() - before.height();
+    if (dx == 0 && dy == 0) {
+        return;
+    }
+    for (int i = 0; i < m_outputs.size(); i++) {
+        Output &other = m_outputs[i];
+        if (i == outputIndex || !positionable(other)) {
+            continue;
+        }
+        QPoint shift;
+        if (other.ptr->pos().x() >= before.x() + before.width()) {
+            shift.setX(dx);
+        }
+        if (other.ptr->pos().y() >= before.y() + before.height()) {
+            shift.setY(dy);
+        }
+        if (shift.isNull()) {
+            continue;
+        }
+        other.pos += shift;
+        other.ptr->setPos(other.ptr->pos() + shift);
+        QModelIndex otherIndex = createIndex(i, 0);
+        Q_EMIT dataChanged(otherIndex, otherIndex, {PositionRole, NormalizedPositionRole});
+    }
+}
+
+// The backend hands out an explicit logical size (KWin: mode size / scale), which a
+// new mode or scale doesn't update by itself
+void OutputModel::updateLogicalSize(const KScreen::OutputPtr &output)
+{
+    if (output->explicitLogicalSize().isValid()) {
+        output->setExplicitLogicalSize(m_config->config()->logicalSizeForOutput(*output));
     }
 }
 

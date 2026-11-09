@@ -51,7 +51,12 @@ public:
         RefreshRatesRole,
         ReplicationSourceModelRole,
         ReplicationSourceIndexRole,
-        ReplicasModelRole
+        ReplicasModelRole,
+        /** Wayland colour management: 0 sRGB, 1 ICC file, 2 the monitor's own (EDID) */
+        ColorProfileSourceRole,
+        IccProfilePathRole,
+        /** Which sources KWin offers for this monitor: bit 0 ICC file, bit 1 EDID */
+        ColorProfileSupportRole
     };
 
     explicit OutputModel(ConfigHandler *configHandler);
@@ -112,6 +117,8 @@ private:
     void roleChanged(int outputId, OutputRoles role);
 
     void resetPosition(const Output &output);
+    void keepNeighboursTouching(int outputIndex, const QRect &before);
+    void updateLogicalSize(const KScreen::OutputPtr &output);
     void reposition();
     void updatePositions();
     void updateOrder();

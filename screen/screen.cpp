@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QGuiApplication>
 #include <QStandardPaths>
 #include "outputmodel.h"
 
@@ -53,7 +54,10 @@ void Screen::save()
     auto *op = new KScreen::SetConfigOperation(config);
     op->exec();
 
-    writeLayoutScript(config);
+    // KWin keeps the Wayland layout itself; the script is X11's, and Wayland's output
+    // names (HDMI-A-1) would break it there
+    if (qgetenv("XDG_SESSION_TYPE") != "wayland" && !QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
+        writeLayoutScript(config);
 }
 
 // The same xrandr line arandr writes: lingmo-session runs it at login, before the
