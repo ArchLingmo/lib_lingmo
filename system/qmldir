@@ -1,3 +1,4 @@
 module Lingmo.System
 
 plugin lingmosystem_qmlplugins
+SessionHint 1.0 SessionHint.qml
